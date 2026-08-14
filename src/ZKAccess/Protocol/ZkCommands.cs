@@ -8,6 +8,9 @@ internal static class ZkCommands
     public const ushort AttendanceRead = 13;
     public const ushort GetFreeSizes = 50;
 
+    public const ushort GetTime = 201;
+    public const ushort SetTime = 202;
+
     public const ushort Connect = 1000;
     public const ushort Exit = 1001;
     public const ushort GetVersion = 1100;
