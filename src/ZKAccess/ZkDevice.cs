@@ -1,3 +1,5 @@
+using System.Text;
+using ZKAccess.Models;
 using ZKAccess.Protocol;
 using ZKAccess.Transport;
 
@@ -71,6 +73,22 @@ public sealed class ZkDevice : IAsyncDisposable
         }
     }
 
+    public async Task<ZkDeviceInfo> GetDeviceInfoAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        var firmware = await ReadFirmwareVersionAsync(cancellationToken);
+        var serial = await ReadOptionAsync("~SerialNumber", cancellationToken);
+        var platform = await ReadOptionAsync("~Platform", cancellationToken);
+        var deviceName = await ReadOptionAsync("~DeviceName", cancellationToken);
+
+        return new ZkDeviceInfo(
+            DeviceName: deviceName,
+            SerialNumber: serial,
+            Platform: platform,
+            FirmwareVersion: firmware);
+    }
+
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         if (!_transport.IsConnected)
@@ -103,6 +121,56 @@ public sealed class ZkDevice : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await DisconnectAsync();
+    }
+
+    private async Task<string?> ReadFirmwareVersionAsync(CancellationToken cancellationToken)
+    {
+        var response = await SendCommandAsync(
+            ZkCommands.GetVersion,
+            ReadOnlyMemory<byte>.Empty,
+            cancellationToken);
+
+        EnsureDataResponse(response, "firmware version");
+        return DecodeNullTerminated(response.Data);
+    }
+
+    private async Task<string?> ReadOptionAsync(string optionName, CancellationToken cancellationToken)
+    {
+        var data = Encoding.ASCII.GetBytes(optionName + "\0");
+        var response = await SendCommandAsync(ZkCommands.OptionsRead, data, cancellationToken);
+        EnsureDataResponse(response, $"option '{optionName}'");
+
+        var text = DecodeNullTerminated(response.Data);
+        if (string.IsNullOrEmpty(text))
+            return text;
+
+        var separator = text.IndexOf('=');
+        return separator >= 0 ? text[(separator + 1)..].TrimStart('=') : text;
+    }
+
+    private static string? DecodeNullTerminated(byte[] data)
+    {
+        if (data.Length == 0)
+            return null;
+
+        var zero = Array.IndexOf(data, (byte)0);
+        var length = zero >= 0 ? zero : data.Length;
+        return Encoding.UTF8.GetString(data, 0, length).Trim();
+    }
+
+    private static void EnsureDataResponse(ZkResponse response, string operation)
+    {
+        if (response.Command is ZkCommands.AckOk or ZkCommands.AckData)
+            return;
+
+        throw new ZkProtocolException(
+            $"Device failed to read {operation}. Response command: {response.Command} (0x{response.Command:X4}).");
+    }
+
+    private void EnsureConnected()
+    {
+        if (!IsConnected)
+            throw new InvalidOperationException("The device is not connected. Call ConnectAsync() first.");
     }
 
     private async Task<ZkResponse> SendCommandAsync(
