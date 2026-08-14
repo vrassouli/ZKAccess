@@ -19,15 +19,20 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
     private const ushort CmdAckUnauth = 2005;
 
     private readonly ZkDeviceOptions _options;
+    private readonly IReadOnlyDictionary<string, ZkUser> _usersByUserId;
     private TcpClient? _client;
     private NetworkStream? _stream;
     private ushort _sessionId;
     private ushort _replyId = 0xFFFE;
 
-    public ZkLiveEventClient(ZkDeviceOptions options)
+    public ZkLiveEventClient(ZkDeviceOptions options, IEnumerable<ZkUser>? users = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _options.Validate();
+        _usersByUserId = (users ?? Array.Empty<ZkUser>())
+            .Where(x => !string.IsNullOrWhiteSpace(x.UserId))
+            .GroupBy(x => x.UserId, StringComparer.Ordinal)
+            .ToDictionary(x => x.Key, x => x.First(), StringComparer.Ordinal);
     }
 
     public bool IsConnected => _client?.Connected == true && _stream is not null;
@@ -101,7 +106,7 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
                     continue;
 
                 foreach (var evt in ParseEvents(response.Data))
-                    yield return evt;
+                    yield return ResolveUser(evt);
             }
         }
         finally
@@ -128,6 +133,14 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
         _stream = null;
         _client = null;
         return ValueTask.CompletedTask;
+    }
+
+    private ZkLiveAttendanceEvent ResolveUser(ZkLiveAttendanceEvent evt)
+    {
+        if (evt.UserId is null || !_usersByUserId.TryGetValue(evt.UserId, out var user))
+            return evt;
+
+        return evt with { UserName = user.Name };
     }
 
     private async Task TryCommandAsync(ushort command, CancellationToken cancellationToken)
@@ -221,17 +234,17 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
             if (TryParseEvent(raw, out var parsed))
                 yield return parsed;
             else
-                yield return new ZkLiveAttendanceEvent(null, null, null, null, raw, false);
+                yield return UnknownEvent(raw);
 
             offset += length;
         }
 
         if (offset < data.Length)
-        {
-            var raw = data.AsSpan(offset).ToArray();
-            yield return new ZkLiveAttendanceEvent(null, null, null, null, raw, false);
-        }
+            yield return UnknownEvent(data.AsSpan(offset).ToArray());
     }
+
+    private static ZkLiveAttendanceEvent UnknownEvent(byte[] raw) =>
+        new(null, null, null, null, null, ZkVerificationMethod.Unknown, raw, false);
 
     private static bool TryParseEvent(byte[] raw, out ZkLiveAttendanceEvent result)
     {
@@ -281,7 +294,15 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
             }
 
             var timestamp = DecodeTimeHex(time);
-            result = new ZkLiveAttendanceEvent(userId, timestamp, status, punch, raw, true);
+            result = new ZkLiveAttendanceEvent(
+                userId,
+                null,
+                timestamp,
+                status,
+                punch,
+                MapVerificationMethod(status),
+                raw,
+                true);
             return true;
         }
         catch
@@ -289,6 +310,13 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
             result = default!;
             return false;
         }
+    }
+
+    private static ZkVerificationMethod MapVerificationMethod(byte status)
+    {
+        // Verification/status codes vary by model and firmware. Keep unknown until a code has
+        // been hardware-verified for a specific method instead of guessing from third-party tables.
+        return ZkVerificationMethod.Unknown;
     }
 
     private static DateTime DecodeTimeHex(ReadOnlySpan<byte> time)
