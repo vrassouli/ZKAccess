@@ -127,8 +127,6 @@ public sealed class ZkDevice : IAsyncDisposable
             }
             catch (ZkProtocolException)
             {
-                // Some firmware rejects unknown option names. Treat those as unavailable so a
-                // capability probe can continue through the remaining candidates.
                 result[optionName] = null;
             }
         }
@@ -259,7 +257,6 @@ public sealed class ZkDevice : IAsyncDisposable
             }
             catch
             {
-                // The TCP connection is disposed below even if the device does not ACK CMD_EXIT.
             }
         }
 
@@ -366,7 +363,6 @@ public sealed class ZkDevice : IAsyncDisposable
         }
         catch
         {
-            // Preserve the successfully read dataset even if this firmware does not ACK buffer release.
         }
 
         return output.ToArray();
@@ -494,49 +490,48 @@ public sealed class ZkDevice : IAsyncDisposable
         if (data.Length == 0)
             return null;
 
-        var length = Array.IndexOf(data, (byte)0);
-        if (length < 0)
-            length = data.Length;
-
-        return Encoding.ASCII.GetString(data, 0, length).Trim();
+        var zero = Array.IndexOf(data, (byte)0);
+        var length = zero >= 0 ? zero : data.Length;
+        return Encoding.UTF8.GetString(data, 0, length).Trim();
     }
 
     private static string DecodeFixed(ReadOnlySpan<byte> data)
     {
-        var length = data.IndexOf((byte)0);
-        if (length < 0)
-            length = data.Length;
-
-        return Encoding.ASCII.GetString(data[..length]).Trim();
+        var zero = data.IndexOf((byte)0);
+        if (zero >= 0)
+            data = data[..zero];
+        return Encoding.UTF8.GetString(data).Trim();
     }
 
-    private async Task<ZkPacket> SendCommandAsync(
-        ushort command,
-        ReadOnlyMemory<byte> data,
-        CancellationToken cancellationToken)
+    private static void EnsureDataResponse(ZkResponse response, string operation)
     {
-        var replyId = unchecked((ushort)(_replyId + 1));
-        var packet = ZkPacket.Create(command, _sessionId, replyId, data.Span);
+        if (response.Command is ZkCommands.AckOk or ZkCommands.AckData)
+            return;
 
-        await _transport.SendAsync(packet.Serialize(), cancellationToken);
-        var responseData = await _transport.ReceiveAsync(cancellationToken);
-        var response = ZkPacket.Parse(responseData);
-
-        _sessionId = response.SessionId;
-        _replyId = response.ReplyId;
-        return response;
-    }
-
-    private static void EnsureDataResponse(ZkPacket response, string operation)
-    {
-        if (response.Command is not (ZkCommands.AckOk or ZkCommands.AckData or ZkCommands.Data))
-            throw new ZkProtocolException(
-                $"Device rejected {operation}. Response command: {response.Command} (0x{response.Command:X4}).");
+        throw new ZkProtocolException(
+            $"Device failed to read {operation}. Response command: {response.Command} (0x{response.Command:X4}).");
     }
 
     private void EnsureConnected()
     {
-        if (!IsConnected || !_transport.IsConnected)
-            throw new InvalidOperationException("Device is not connected.");
+        if (!IsConnected)
+            throw new InvalidOperationException("The device is not connected. Call ConnectAsync() first.");
+    }
+
+    private async Task<ZkResponse> SendCommandAsync(
+        ushort command,
+        ReadOnlyMemory<byte> data,
+        CancellationToken cancellationToken)
+    {
+        var request = ZkPacket.BuildTcpRequest(command, data.Span, _sessionId, _replyId);
+        var rawResponse = await _transport.ExchangeAsync(
+            request,
+            _options.RequestTimeout,
+            cancellationToken);
+
+        var response = ZkPacket.ParseTcpResponse(rawResponse);
+        _sessionId = response.SessionId;
+        _replyId = response.ReplyId;
+        return response;
     }
 }
