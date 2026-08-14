@@ -109,7 +109,7 @@ public sealed class ZkDevice : IAsyncDisposable
         if (data.Length < 4)
             throw new ZkProtocolException("User dataset is shorter than its 4-byte size header.");
 
-        var totalSize = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
+        var totalSize = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4)));
         if (totalSize == 0)
             return Array.Empty<ZkUser>();
 
@@ -121,12 +121,12 @@ public sealed class ZkDevice : IAsyncDisposable
             throw new ZkProtocolException(
                 $"Cannot determine user record size: {totalSize} bytes for {userCount} users.");
 
-        var recordSize = checked((int)(totalSize / userCount));
+        var recordSize = totalSize / userCount;
         if (recordSize is not (28 or 72))
             throw new ZkProtocolException($"Unsupported ZKTeco user record size: {recordSize} bytes.");
 
         var users = new List<ZkUser>(userCount);
-        var records = data.AsSpan(4, checked((int)totalSize));
+        var records = data.AsSpan(4, totalSize);
 
         for (var offset = 0; offset + recordSize <= records.Length; offset += recordSize)
         {
@@ -213,16 +213,14 @@ public sealed class ZkDevice : IAsyncDisposable
         if (response.Data.Length < 5)
             throw new ZkProtocolException("Buffered-read preparation response is missing the dataset size.");
 
-        var size = BinaryPrimitives.ReadUInt32LittleEndian(response.Data.AsSpan(1, 4));
-        if (size > int.MaxValue)
-            throw new ZkProtocolException($"Buffered dataset is too large: {size} bytes.");
+        var size = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(response.Data.AsSpan(1, 4)));
 
-        using var output = new MemoryStream(checked((int)size));
+        using var output = new MemoryStream(size);
         var start = 0;
 
         while (start < size)
         {
-            var chunkSize = (int)Math.Min((uint)MaxTcpBufferChunk, size - (uint)start);
+            var chunkSize = Math.Min(MaxTcpBufferChunk, size - start);
             var request = new byte[8];
             BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(0, 4), start);
             BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(4, 4), chunkSize);
@@ -242,14 +240,10 @@ public sealed class ZkDevice : IAsyncDisposable
 
         try
         {
-            var free = await SendCommandAsync(
+            await SendCommandAsync(
                 ZkCommands.FreeData,
                 ReadOnlyMemory<byte>.Empty,
                 cancellationToken);
-
-            if (free.Command != ZkCommands.AckOk)
-                throw new ZkProtocolException(
-                    $"Device did not release its transfer buffer. Response: {free.Command} (0x{free.Command:X4}).");
         }
         catch
         {
