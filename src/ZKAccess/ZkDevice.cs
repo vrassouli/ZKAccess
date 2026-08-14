@@ -92,6 +92,85 @@ public sealed class ZkDevice : IAsyncDisposable
             FirmwareVersion: firmware);
     }
 
+    public async Task<ZkStorageInfo> GetStorageInfoAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        var response = await SendCommandAsync(
+            ZkCommands.GetFreeSizes,
+            ReadOnlyMemory<byte>.Empty,
+            cancellationToken);
+
+        EnsureDataResponse(response, "device storage sizes");
+        if (response.Data.Length < 80)
+            throw new ZkProtocolException(
+                $"Device storage-size response is too short: {response.Data.Length} bytes; expected at least 80.");
+
+        var data = response.Data.AsSpan();
+        var users = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(16, 4));
+        var fingerprints = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(24, 4));
+        var records = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(32, 4));
+        var cards = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(48, 4));
+        var fingerprintCapacity = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(56, 4));
+        var userCapacity = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(60, 4));
+        var recordCapacity = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(64, 4));
+        var availableFingerprints = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(68, 4));
+        var availableUsers = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(72, 4));
+        var availableRecords = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(76, 4));
+
+        var faces = 0;
+        var faceCapacity = 0;
+        if (response.Data.Length >= 92)
+        {
+            faces = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(80, 4));
+            faceCapacity = BinaryPrimitives.ReadInt32LittleEndian(data.Slice(88, 4));
+        }
+
+        return new ZkStorageInfo(
+            Users: users,
+            UserCapacity: userCapacity,
+            AttendanceRecords: records,
+            AttendanceCapacity: recordCapacity,
+            Fingerprints: fingerprints,
+            FingerprintCapacity: fingerprintCapacity,
+            Cards: cards,
+            Faces: faces,
+            FaceCapacity: faceCapacity,
+            AvailableUsers: availableUsers,
+            AvailableAttendanceRecords: availableRecords,
+            AvailableFingerprints: availableFingerprints);
+    }
+
+    public async Task<DateTime> GetTimeAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+        var response = await SendCommandAsync(
+            ZkCommands.GetTime,
+            ReadOnlyMemory<byte>.Empty,
+            cancellationToken);
+
+        EnsureDataResponse(response, "device time");
+        if (response.Data.Length < 4)
+            throw new ZkProtocolException("Device time response is shorter than 4 bytes.");
+
+        return DecodeDeviceTime(response.Data.AsSpan(0, 4));
+    }
+
+    public async Task SetTimeAsync(DateTime timestamp, CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        if (timestamp.Year is < 2000 or > 2099)
+            throw new ArgumentOutOfRangeException(nameof(timestamp), "ZKTeco packed device time supports years 2000-2099.");
+
+        var data = new byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(data, EncodeDeviceTime(timestamp));
+
+        var response = await SendCommandAsync(ZkCommands.SetTime, data, cancellationToken);
+        if (response.Command != ZkCommands.AckOk)
+            throw new ZkProtocolException(
+                $"Device rejected time update. Response command: {response.Command} (0x{response.Command:X4}).");
+    }
+
     public async Task<string?> GetOptionAsync(
         string optionName,
         CancellationToken cancellationToken = default)
@@ -273,17 +352,17 @@ public sealed class ZkDevice : IAsyncDisposable
 
     private async Task<int> ReadUserCountAsync(CancellationToken cancellationToken)
     {
-        var sizes = await ReadStorageSizesAsync(cancellationToken);
+        var sizes = await ReadStorageCountsAsync(cancellationToken);
         return sizes.Users;
     }
 
     private async Task<int> ReadAttendanceCountAsync(CancellationToken cancellationToken)
     {
-        var sizes = await ReadStorageSizesAsync(cancellationToken);
+        var sizes = await ReadStorageCountsAsync(cancellationToken);
         return sizes.AttendanceRecords;
     }
 
-    private async Task<(int Users, int AttendanceRecords)> ReadStorageSizesAsync(
+    private async Task<(int Users, int AttendanceRecords)> ReadStorageCountsAsync(
         CancellationToken cancellationToken)
     {
         var response = await SendCommandAsync(
@@ -458,6 +537,15 @@ public sealed class ZkDevice : IAsyncDisposable
         var year = (int)value + 2000;
 
         return new DateTime(year, month, day, hour, minute, second, DateTimeKind.Unspecified);
+    }
+
+    private static uint EncodeDeviceTime(DateTime timestamp)
+    {
+        return checked((uint)(
+            ((timestamp.Year % 100) * 12 * 31 + (timestamp.Month - 1) * 31 + timestamp.Day - 1) *
+            24 * 60 * 60 +
+            (timestamp.Hour * 60 + timestamp.Minute) * 60 +
+            timestamp.Second));
     }
 
     private async Task<string?> ReadFirmwareVersionAsync(CancellationToken cancellationToken)
