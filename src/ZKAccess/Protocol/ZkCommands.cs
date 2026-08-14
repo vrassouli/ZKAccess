@@ -30,5 +30,6 @@ internal static class ZkCommands
     public const ushort AckData = 2002;
     public const ushort AckUnauthenticated = 2005;
 
+    public const int FunctionFingerprintTemplate = 2;
     public const int FunctionUser = 5;
 }
