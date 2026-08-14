@@ -23,7 +23,6 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
     private NetworkStream? _stream;
     private ushort _sessionId;
     private ushort _replyId = 0xFFFE;
-    private bool _watching;
 
     public ZkLiveEventClient(ZkDeviceOptions options)
     {
@@ -80,8 +79,6 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
             if (register.Command != CmdAckOk)
                 throw new ZkProtocolException($"Device rejected live attendance registration. Response: {register.Command} (0x{register.Command:X4}).");
 
-            _watching = true;
-
             while (!cancellationToken.IsCancellationRequested)
             {
                 byte[] frame;
@@ -109,7 +106,6 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
         }
         finally
         {
-            _watching = false;
             if (IsConnected)
             {
                 try
@@ -125,14 +121,13 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
         }
     }
 
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        _watching = false;
         _stream?.Dispose();
         _client?.Dispose();
         _stream = null;
         _client = null;
-        await ValueTask.CompletedTask;
+        return ValueTask.CompletedTask;
     }
 
     private async Task TryCommandAsync(ushort command, CancellationToken cancellationToken)
@@ -205,11 +200,12 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
 
     private static IEnumerable<ZkLiveAttendanceEvent> ParseEvents(byte[] data)
     {
-        var remaining = data.AsSpan();
+        var offset = 0;
 
-        while (remaining.Length >= 10)
+        while (data.Length - offset >= 10)
         {
-            var length = remaining.Length switch
+            var remaining = data.Length - offset;
+            var length = remaining switch
             {
                 10 => 10,
                 12 => 12,
@@ -218,20 +214,23 @@ public sealed class ZkLiveEventClient : IAsyncDisposable
                 36 => 36,
                 37 => 37,
                 >= 52 => 52,
-                _ => remaining.Length
+                _ => remaining
             };
 
-            var raw = remaining[..length].ToArray();
+            var raw = data.AsSpan(offset, length).ToArray();
             if (TryParseEvent(raw, out var parsed))
                 yield return parsed;
             else
                 yield return new ZkLiveAttendanceEvent(null, null, null, null, raw, false);
 
-            remaining = remaining[length..];
+            offset += length;
         }
 
-        if (!remaining.IsEmpty)
-            yield return new ZkLiveAttendanceEvent(null, null, null, null, remaining.ToArray(), false);
+        if (offset < data.Length)
+        {
+            var raw = data.AsSpan(offset).ToArray();
+            yield return new ZkLiveAttendanceEvent(null, null, null, null, raw, false);
+        }
     }
 
     private static bool TryParseEvent(byte[] raw, out ZkLiveAttendanceEvent result)
