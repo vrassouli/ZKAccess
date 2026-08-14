@@ -1,3 +1,4 @@
+using System.Globalization;
 using ZKAccess;
 using ZKAccess.Models;
 
@@ -134,8 +135,9 @@ static async Task ShowAttendanceLogsAsync(ZkDevice device)
 
     foreach (var log in logs.OrderBy(x => x.Timestamp))
     {
+        var timestamp = log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
         Console.WriteLine(
-            $"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {log.Timestamp:yyyy-MM-dd HH:mm:ss} " +
+            $"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {timestamp,-20} " +
             $"{log.Status,-8} {log.Punch,-7} {(log.WorkCode?.ToString() ?? string.Empty),-10}");
     }
 }
