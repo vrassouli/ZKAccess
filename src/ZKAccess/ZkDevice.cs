@@ -137,6 +137,65 @@ public sealed class ZkDevice : IAsyncDisposable
         return users;
     }
 
+    public async Task<IReadOnlyList<ZkAttendanceLog>> GetAttendanceLogsAsync(
+        CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        var recordCount = await ReadAttendanceCountAsync(cancellationToken);
+        if (recordCount == 0)
+            return Array.Empty<ZkAttendanceLog>();
+
+        var users = await GetUsersAsync(cancellationToken);
+        var usersByUid = users.ToDictionary(x => x.Uid);
+        var usersByUserId = users
+            .Where(x => !string.IsNullOrWhiteSpace(x.UserId))
+            .GroupBy(x => x.UserId)
+            .ToDictionary(x => x.Key, x => x.First());
+
+        var data = await ReadWithBufferAsync(
+            ZkCommands.AttendanceRead,
+            0,
+            0,
+            cancellationToken);
+
+        if (data.Length < 4)
+            throw new ZkProtocolException("Attendance dataset is shorter than its 4-byte size header.");
+
+        var totalSize = checked((int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4)));
+        if (totalSize == 0)
+            return Array.Empty<ZkAttendanceLog>();
+
+        if (totalSize > data.Length - 4)
+            throw new ZkProtocolException(
+                $"Attendance dataset declares {totalSize} bytes but only {data.Length - 4} bytes were received.");
+
+        if (totalSize % recordCount != 0)
+            throw new ZkProtocolException(
+                $"Cannot determine attendance record size: {totalSize} bytes for {recordCount} records.");
+
+        var recordSize = totalSize / recordCount;
+        if (recordSize is not (8 or 16 or 40))
+            throw new ZkProtocolException($"Unsupported ZKTeco attendance record size: {recordSize} bytes.");
+
+        var logs = new List<ZkAttendanceLog>(recordCount);
+        var records = data.AsSpan(4, totalSize);
+
+        for (var offset = 0; offset + recordSize <= records.Length; offset += recordSize)
+        {
+            var record = records.Slice(offset, recordSize);
+            logs.Add(recordSize switch
+            {
+                8 => ParseAttendance8(record, usersByUid),
+                16 => ParseAttendance16(record, usersByUserId),
+                40 => ParseAttendance40(record),
+                _ => throw new UnreachableException()
+            });
+        }
+
+        return logs;
+    }
+
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         if (!_transport.IsConnected)
@@ -173,20 +232,36 @@ public sealed class ZkDevice : IAsyncDisposable
 
     private async Task<int> ReadUserCountAsync(CancellationToken cancellationToken)
     {
+        var sizes = await ReadStorageSizesAsync(cancellationToken);
+        return sizes.Users;
+    }
+
+    private async Task<int> ReadAttendanceCountAsync(CancellationToken cancellationToken)
+    {
+        var sizes = await ReadStorageSizesAsync(cancellationToken);
+        return sizes.AttendanceRecords;
+    }
+
+    private async Task<(int Users, int AttendanceRecords)> ReadStorageSizesAsync(
+        CancellationToken cancellationToken)
+    {
         var response = await SendCommandAsync(
             ZkCommands.GetFreeSizes,
             ReadOnlyMemory<byte>.Empty,
             cancellationToken);
 
         EnsureDataResponse(response, "device storage sizes");
-        if (response.Data.Length < 20)
-            throw new ZkProtocolException("Device storage-size response is too short to contain user count.");
+        if (response.Data.Length < 36)
+            throw new ZkProtocolException("Device storage-size response is too short.");
 
         var users = BinaryPrimitives.ReadInt32LittleEndian(response.Data.AsSpan(16, 4));
-        if (users < 0)
-            throw new ZkProtocolException($"Device returned an invalid user count: {users}.");
+        var records = BinaryPrimitives.ReadInt32LittleEndian(response.Data.AsSpan(32, 4));
 
-        return users;
+        if (users < 0 || records < 0)
+            throw new ZkProtocolException(
+                $"Device returned invalid storage counts: users={users}, attendance={records}.");
+
+        return (users, records);
     }
 
     private async Task<byte[]> ReadWithBufferAsync(
@@ -283,6 +358,66 @@ public sealed class ZkDevice : IAsyncDisposable
             name = $"NN-{userId}";
 
         return new ZkUser(uid, userId, name, privilege, password, groupId, card);
+    }
+
+    private static ZkAttendanceLog ParseAttendance8(
+        ReadOnlySpan<byte> record,
+        IReadOnlyDictionary<ushort, ZkUser> usersByUid)
+    {
+        var uid = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(0, 2));
+        var status = record[2];
+        var timestamp = DecodeDeviceTime(record.Slice(3, 4));
+        var punch = record[7];
+        var userId = usersByUid.TryGetValue(uid, out var user) ? user.UserId : uid.ToString();
+
+        return new ZkAttendanceLog(uid, userId, timestamp, status, punch);
+    }
+
+    private static ZkAttendanceLog ParseAttendance16(
+        ReadOnlySpan<byte> record,
+        IReadOnlyDictionary<string, ZkUser> usersByUserId)
+    {
+        var numericUserId = BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(0, 4));
+        var userId = numericUserId.ToString();
+        var timestamp = DecodeDeviceTime(record.Slice(4, 4));
+        var status = record[8];
+        var punch = record[9];
+        var workCode = BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(12, 4));
+        var uid = usersByUserId.TryGetValue(userId, out var user)
+            ? user.Uid
+            : checked((ushort)Math.Min(numericUserId, ushort.MaxValue));
+
+        return new ZkAttendanceLog(uid, userId, timestamp, status, punch, workCode);
+    }
+
+    private static ZkAttendanceLog ParseAttendance40(ReadOnlySpan<byte> record)
+    {
+        var uid = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(0, 2));
+        var userId = DecodeFixed(record.Slice(2, 24));
+        var status = record[26];
+        var timestamp = DecodeDeviceTime(record.Slice(27, 4));
+        var punch = record[31];
+
+        return new ZkAttendanceLog(uid, userId, timestamp, status, punch);
+    }
+
+    private static DateTime DecodeDeviceTime(ReadOnlySpan<byte> data)
+    {
+        var value = BinaryPrimitives.ReadUInt32LittleEndian(data);
+
+        var second = (int)(value % 60);
+        value /= 60;
+        var minute = (int)(value % 60);
+        value /= 60;
+        var hour = (int)(value % 24);
+        value /= 24;
+        var day = (int)(value % 31) + 1;
+        value /= 31;
+        var month = (int)(value % 12) + 1;
+        value /= 12;
+        var year = (int)value + 2000;
+
+        return new DateTime(year, month, day, hour, minute, second, DateTimeKind.Unspecified);
     }
 
     private async Task<string?> ReadFirmwareVersionAsync(CancellationToken cancellationToken)
