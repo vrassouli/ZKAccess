@@ -13,3 +13,12 @@ await using var device = new ZkDevice(new ZkDeviceOptions
 Console.WriteLine($"Connecting to {host}:4370...");
 await device.ConnectAsync();
 Console.WriteLine($"Connected and authenticated. Session ID: {device.SessionId}");
+
+var info = await device.GetDeviceInfoAsync();
+
+Console.WriteLine();
+Console.WriteLine("Device information:");
+Console.WriteLine($"  Name     : {info.DeviceName ?? "<unknown>"}");
+Console.WriteLine($"  Serial   : {info.SerialNumber ?? "<unknown>"}");
+Console.WriteLine($"  Platform : {info.Platform ?? "<unknown>"}");
+Console.WriteLine($"  Firmware : {info.FirmwareVersion ?? "<unknown>"}");
