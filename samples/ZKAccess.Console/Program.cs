@@ -46,6 +46,7 @@ while (true)
     Console.WriteLine("10. Find user by User ID");
     Console.WriteLine("11. Add / update user [write]");
     Console.WriteLine("12. Delete user [write]");
+    Console.WriteLine("13. Fingerprint templates [read-only]");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
     Console.Write("Select: ");
@@ -69,6 +70,7 @@ while (true)
             case "10": await FindUserAsync(device); break;
             case "11": await AddOrUpdateUserAsync(options); break;
             case "12": await DeleteUserAsync(device, options); break;
+            case "13": await ShowFingerprintTemplatesAsync(device, options); break;
 
             case "0":
             case "q":
@@ -78,13 +80,43 @@ while (true)
                 return;
 
             default:
-                Console.WriteLine("Unknown selection. Choose 0-12.");
+                Console.WriteLine("Unknown selection. Choose 0-13.");
                 break;
         }
     }
     catch (Exception ex)
     {
         Console.WriteLine($"Operation failed: {ex.Message}");
+    }
+}
+
+static async Task ShowFingerprintTemplatesAsync(ZkDevice device, ZkDeviceOptions options)
+{
+    Console.WriteLine("Reading fingerprint templates...");
+    var users = await device.GetUsersAsync();
+    var usersByUid = users.ToDictionary(x => x.Uid);
+
+    await using var fingerprints = new ZkFingerprintClient(options);
+    var templates = await fingerprints.GetTemplatesAsync();
+
+    Console.WriteLine();
+    Console.WriteLine($"Fingerprint templates ({templates.Count})");
+    Console.WriteLine(new string('-', 84));
+    Console.WriteLine($"{"UID",-6} {"User ID",-14} {"Name",-24} {"Finger",-8} {"Valid",-7} {"Bytes",-8}");
+    Console.WriteLine(new string('-', 84));
+
+    if (templates.Count == 0)
+    {
+        Console.WriteLine("No fingerprint templates found.");
+        return;
+    }
+
+    foreach (var template in templates.OrderBy(x => x.Uid).ThenBy(x => x.FingerIndex))
+    {
+        usersByUid.TryGetValue(template.Uid, out var user);
+        Console.WriteLine(
+            $"{template.Uid,-6} {TrimForTable(user?.UserId, 14),-14} {TrimForTable(user?.Name, 24),-24} " +
+            $"{template.FingerIndex,-8} {template.Valid,-7} {template.Size,-8}");
     }
 }
 
