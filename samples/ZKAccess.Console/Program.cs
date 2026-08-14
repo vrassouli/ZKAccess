@@ -33,7 +33,7 @@ while (true)
     Console.WriteLine("----");
     Console.WriteLine("1. Device information");
     Console.WriteLine("2. User list");
-    Console.WriteLine("3. Attendance logs      [coming next]");
+    Console.WriteLine("3. Attendance logs");
     Console.WriteLine("4. Connection status");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
@@ -55,7 +55,7 @@ while (true)
                 break;
 
             case "3":
-                ShowPendingFeature("Attendance logs", "GetAttendanceLogsAsync()");
+                await ShowAttendanceLogsAsync(device);
                 break;
 
             case "4":
@@ -115,6 +115,31 @@ static async Task ShowUsersAsync(ZkDevice device)
         PrintUser(user);
 }
 
+static async Task ShowAttendanceLogsAsync(ZkDevice device)
+{
+    Console.WriteLine("Reading attendance logs...");
+    var logs = await device.GetAttendanceLogsAsync();
+
+    Console.WriteLine();
+    Console.WriteLine($"Attendance logs ({logs.Count})");
+    Console.WriteLine(new string('-', 96));
+    Console.WriteLine($"{"UID",-6} {"User ID",-16} {"Timestamp",-20} {"Status",-8} {"Punch",-7} {"WorkCode",-10}");
+    Console.WriteLine(new string('-', 96));
+
+    if (logs.Count == 0)
+    {
+        Console.WriteLine("No attendance logs found.");
+        return;
+    }
+
+    foreach (var log in logs.OrderBy(x => x.Timestamp))
+    {
+        Console.WriteLine(
+            $"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {log.Timestamp:yyyy-MM-dd HH:mm:ss} " +
+            $"{log.Status,-8} {log.Punch,-7} {(log.WorkCode?.ToString() ?? string.Empty),-10}");
+    }
+}
+
 static void PrintUser(ZkUser user)
 {
     Console.WriteLine(
@@ -129,13 +154,6 @@ static void ShowConnectionStatus(ZkDevice device, string host)
     Console.WriteLine($"Host      : {host}:4370");
     Console.WriteLine($"Connected : {device.IsConnected}");
     Console.WriteLine($"Session ID: {device.SessionId}");
-}
-
-static void ShowPendingFeature(string title, string api)
-{
-    Console.WriteLine(title);
-    Console.WriteLine(new string('-', title.Length));
-    Console.WriteLine($"{api} is the next protocol feature to implement.");
 }
 
 static string TrimForTable(string? value, int width)
