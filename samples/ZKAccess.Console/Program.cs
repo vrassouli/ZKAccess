@@ -62,7 +62,7 @@ while (true)
             case "3": await ShowAttendanceLogsAsync(device); break;
             case "4": ShowConnectionStatus(device, host); break;
             case "5": await ProbePushOptionsAsync(device); break;
-            case "6": await WatchLiveAttendanceAsync(options); break;
+            case "6": await WatchLiveAttendanceAsync(device, options); break;
             case "7": await ShowStorageInfoAsync(device); break;
             case "8": await ShowDeviceTimeAsync(device); break;
             case "9": await SetDeviceTimeAsync(device); break;
@@ -278,13 +278,16 @@ static async Task ShowAttendanceLogsAsync(ZkDevice device)
     }
 }
 
-static async Task WatchLiveAttendanceAsync(ZkDeviceOptions options)
+static async Task WatchLiveAttendanceAsync(ZkDevice device, ZkDeviceOptions options)
 {
     Console.WriteLine("Live attendance events (experimental)");
     Console.WriteLine("-------------------------------------");
+    Console.WriteLine("Loading users for event identity resolution...");
+    var users = await device.GetUsersAsync();
+    Console.WriteLine($"Loaded {users.Count} user(s).");
     Console.WriteLine("Opening a dedicated live-event session...");
 
-    await using var live = new ZkLiveEventClient(options);
+    await using var live = new ZkLiveEventClient(options, users);
     await live.ConnectAsync();
     Console.WriteLine($"Live session connected. Session ID: {live.SessionId}");
     Console.WriteLine("Touch the terminal / verify a user now.");
@@ -303,7 +306,13 @@ static async Task WatchLiveAttendanceAsync(ZkDeviceOptions options)
             }
 
             var timestamp = evt.Timestamp?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "<unknown>";
-            Console.WriteLine($"[LIVE] User={evt.UserId ?? "<unknown>"}  Time={timestamp}  Status={evt.Status?.ToString() ?? "?"}  Punch={evt.Punch?.ToString() ?? "?"}");
+            var identity = string.IsNullOrWhiteSpace(evt.UserName)
+                ? evt.UserId ?? "<unknown>"
+                : $"{evt.UserName} ({evt.UserId})";
+
+            Console.WriteLine(
+                $"[LIVE] User={identity}  Time={timestamp}  Method={evt.VerificationMethod}  " +
+                $"Status={evt.Status?.ToString() ?? "?"}  Punch={evt.Punch?.ToString() ?? "?"}");
         }
     });
 
