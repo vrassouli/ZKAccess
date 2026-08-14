@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using ZKAccess.Models;
 using ZKAccess.Protocol;
@@ -7,6 +8,8 @@ namespace ZKAccess;
 
 public sealed class ZkDevice : IAsyncDisposable
 {
+    private const int MaxTcpBufferChunk = 0xFFC0;
+
     private readonly ZkDeviceOptions _options;
     private readonly IZkTransport _transport;
     private ushort _sessionId;
@@ -89,6 +92,51 @@ public sealed class ZkDevice : IAsyncDisposable
             FirmwareVersion: firmware);
     }
 
+    public async Task<IReadOnlyList<ZkUser>> GetUsersAsync(CancellationToken cancellationToken = default)
+    {
+        EnsureConnected();
+
+        var userCount = await ReadUserCountAsync(cancellationToken);
+        if (userCount == 0)
+            return Array.Empty<ZkUser>();
+
+        var data = await ReadWithBufferAsync(
+            ZkCommands.UserTemplateRead,
+            ZkCommands.FunctionUser,
+            0,
+            cancellationToken);
+
+        if (data.Length < 4)
+            throw new ZkProtocolException("User dataset is shorter than its 4-byte size header.");
+
+        var totalSize = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
+        if (totalSize == 0)
+            return Array.Empty<ZkUser>();
+
+        if (totalSize > data.Length - 4)
+            throw new ZkProtocolException(
+                $"User dataset declares {totalSize} bytes but only {data.Length - 4} bytes were received.");
+
+        if (totalSize % userCount != 0)
+            throw new ZkProtocolException(
+                $"Cannot determine user record size: {totalSize} bytes for {userCount} users.");
+
+        var recordSize = checked((int)(totalSize / userCount));
+        if (recordSize is not (28 or 72))
+            throw new ZkProtocolException($"Unsupported ZKTeco user record size: {recordSize} bytes.");
+
+        var users = new List<ZkUser>(userCount);
+        var records = data.AsSpan(4, checked((int)totalSize));
+
+        for (var offset = 0; offset + recordSize <= records.Length; offset += recordSize)
+        {
+            var record = records.Slice(offset, recordSize);
+            users.Add(recordSize == 72 ? ParseUser72(record) : ParseUser28(record));
+        }
+
+        return users;
+    }
+
     public async Task DisconnectAsync(CancellationToken cancellationToken = default)
     {
         if (!_transport.IsConnected)
@@ -121,6 +169,126 @@ public sealed class ZkDevice : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         await DisconnectAsync();
+    }
+
+    private async Task<int> ReadUserCountAsync(CancellationToken cancellationToken)
+    {
+        var response = await SendCommandAsync(
+            ZkCommands.GetFreeSizes,
+            ReadOnlyMemory<byte>.Empty,
+            cancellationToken);
+
+        EnsureDataResponse(response, "device storage sizes");
+        if (response.Data.Length < 20)
+            throw new ZkProtocolException("Device storage-size response is too short to contain user count.");
+
+        var users = BinaryPrimitives.ReadInt32LittleEndian(response.Data.AsSpan(16, 4));
+        if (users < 0)
+            throw new ZkProtocolException($"Device returned an invalid user count: {users}.");
+
+        return users;
+    }
+
+    private async Task<byte[]> ReadWithBufferAsync(
+        ushort command,
+        int function,
+        int extension,
+        CancellationToken cancellationToken)
+    {
+        var prepare = new byte[11];
+        prepare[0] = 1;
+        BinaryPrimitives.WriteInt16LittleEndian(prepare.AsSpan(1, 2), unchecked((short)command));
+        BinaryPrimitives.WriteInt32LittleEndian(prepare.AsSpan(3, 4), function);
+        BinaryPrimitives.WriteInt32LittleEndian(prepare.AsSpan(7, 4), extension);
+
+        var response = await SendCommandAsync(ZkCommands.PrepareBuffer, prepare, cancellationToken);
+
+        if (response.Command == ZkCommands.Data)
+            return response.Data;
+
+        if (response.Command != ZkCommands.AckOk)
+            throw new ZkProtocolException(
+                $"Device does not support buffered reads for command {command}. Response: {response.Command} (0x{response.Command:X4}).");
+
+        if (response.Data.Length < 5)
+            throw new ZkProtocolException("Buffered-read preparation response is missing the dataset size.");
+
+        var size = BinaryPrimitives.ReadUInt32LittleEndian(response.Data.AsSpan(1, 4));
+        if (size > int.MaxValue)
+            throw new ZkProtocolException($"Buffered dataset is too large: {size} bytes.");
+
+        using var output = new MemoryStream(checked((int)size));
+        var start = 0;
+
+        while (start < size)
+        {
+            var chunkSize = (int)Math.Min((uint)MaxTcpBufferChunk, size - (uint)start);
+            var request = new byte[8];
+            BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(0, 4), start);
+            BinaryPrimitives.WriteInt32LittleEndian(request.AsSpan(4, 4), chunkSize);
+
+            var chunk = await SendCommandAsync(ZkCommands.ReadBuffer, request, cancellationToken);
+            if (chunk.Command != ZkCommands.Data)
+                throw new ZkProtocolException(
+                    $"Buffered read failed at offset {start}. Response: {chunk.Command} (0x{chunk.Command:X4}).");
+
+            if (chunk.Data.Length < chunkSize)
+                throw new ZkProtocolException(
+                    $"Buffered read at offset {start} returned {chunk.Data.Length} bytes; expected {chunkSize}.");
+
+            output.Write(chunk.Data, 0, chunkSize);
+            start += chunkSize;
+        }
+
+        try
+        {
+            var free = await SendCommandAsync(
+                ZkCommands.FreeData,
+                ReadOnlyMemory<byte>.Empty,
+                cancellationToken);
+
+            if (free.Command != ZkCommands.AckOk)
+                throw new ZkProtocolException(
+                    $"Device did not release its transfer buffer. Response: {free.Command} (0x{free.Command:X4}).");
+        }
+        catch
+        {
+            // Preserve the successfully read dataset even if this firmware does not ACK buffer release.
+        }
+
+        return output.ToArray();
+    }
+
+    private static ZkUser ParseUser72(ReadOnlySpan<byte> record)
+    {
+        var uid = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(0, 2));
+        var privilege = record[2];
+        var password = DecodeFixed(record.Slice(3, 8));
+        var name = DecodeFixed(record.Slice(11, 24));
+        var card = BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(35, 4));
+        var groupId = DecodeFixed(record.Slice(40, 7));
+        var userId = DecodeFixed(record.Slice(48, 24));
+
+        if (string.IsNullOrWhiteSpace(name))
+            name = $"NN-{userId}";
+
+        return new ZkUser(uid, userId, name, privilege, password, groupId, card);
+    }
+
+    private static ZkUser ParseUser28(ReadOnlySpan<byte> record)
+    {
+        var uid = BinaryPrimitives.ReadUInt16LittleEndian(record.Slice(0, 2));
+        var privilege = record[2];
+        var password = DecodeFixed(record.Slice(3, 5));
+        var name = DecodeFixed(record.Slice(8, 8));
+        var card = BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(16, 4));
+        var groupId = record[21].ToString();
+        var userId = BinaryPrimitives.ReadUInt32LittleEndian(record.Slice(24, 4)).ToString();
+
+        if (string.IsNullOrWhiteSpace(name))
+            name = $"NN-{userId}";
+
+        return new ZkUser(uid, userId, name, privilege, password, groupId, card);
     }
 
     private async Task<string?> ReadFirmwareVersionAsync(CancellationToken cancellationToken)
@@ -156,6 +324,14 @@ public sealed class ZkDevice : IAsyncDisposable
         var zero = Array.IndexOf(data, (byte)0);
         var length = zero >= 0 ? zero : data.Length;
         return Encoding.UTF8.GetString(data, 0, length).Trim();
+    }
+
+    private static string DecodeFixed(ReadOnlySpan<byte> data)
+    {
+        var zero = data.IndexOf((byte)0);
+        if (zero >= 0)
+            data = data[..zero];
+        return Encoding.UTF8.GetString(data).Trim();
     }
 
     private static void EnsureDataResponse(ZkResponse response, string operation)
