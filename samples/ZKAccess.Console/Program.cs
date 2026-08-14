@@ -43,6 +43,9 @@ while (true)
     Console.WriteLine("7. Storage / capacity");
     Console.WriteLine("8. Device time");
     Console.WriteLine("9. Set device time to this computer's local time");
+    Console.WriteLine("10. Find user by User ID");
+    Console.WriteLine("11. Add / update user [write]");
+    Console.WriteLine("12. Delete user [write]");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
     Console.Write("Select: ");
@@ -54,41 +57,18 @@ while (true)
     {
         switch (choice)
         {
-            case "1":
-                await ShowDeviceInfoAsync(device);
-                break;
-
-            case "2":
-                await ShowUsersAsync(device);
-                break;
-
-            case "3":
-                await ShowAttendanceLogsAsync(device);
-                break;
-
-            case "4":
-                ShowConnectionStatus(device, host);
-                break;
-
-            case "5":
-                await ProbePushOptionsAsync(device);
-                break;
-
-            case "6":
-                await WatchLiveAttendanceAsync(options);
-                break;
-
-            case "7":
-                await ShowStorageInfoAsync(device);
-                break;
-
-            case "8":
-                await ShowDeviceTimeAsync(device);
-                break;
-
-            case "9":
-                await SetDeviceTimeAsync(device);
-                break;
+            case "1": await ShowDeviceInfoAsync(device); break;
+            case "2": await ShowUsersAsync(device); break;
+            case "3": await ShowAttendanceLogsAsync(device); break;
+            case "4": ShowConnectionStatus(device, host); break;
+            case "5": await ProbePushOptionsAsync(device); break;
+            case "6": await WatchLiveAttendanceAsync(options); break;
+            case "7": await ShowStorageInfoAsync(device); break;
+            case "8": await ShowDeviceTimeAsync(device); break;
+            case "9": await SetDeviceTimeAsync(device); break;
+            case "10": await FindUserAsync(device); break;
+            case "11": await AddOrUpdateUserAsync(options); break;
+            case "12": await DeleteUserAsync(device, options); break;
 
             case "0":
             case "q":
@@ -98,7 +78,7 @@ while (true)
                 return;
 
             default:
-                Console.WriteLine("Unknown selection. Choose 0-9.");
+                Console.WriteLine("Unknown selection. Choose 0-12.");
                 break;
         }
     }
@@ -108,11 +88,109 @@ while (true)
     }
 }
 
+static async Task FindUserAsync(ZkDevice device)
+{
+    Console.Write("User ID: ");
+    var userId = Console.ReadLine()?.Trim();
+    if (string.IsNullOrWhiteSpace(userId))
+        return;
+
+    var users = await device.GetUsersAsync();
+    var user = users.FirstOrDefault(x => string.Equals(x.UserId, userId, StringComparison.Ordinal));
+
+    if (user is null)
+    {
+        Console.WriteLine("User not found.");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("User");
+    Console.WriteLine("----");
+    Console.WriteLine($"UID       : {user.Uid}");
+    Console.WriteLine($"User ID   : {user.UserId}");
+    Console.WriteLine($"Name      : {user.Name}");
+    Console.WriteLine($"Privilege : {user.Privilege}");
+    Console.WriteLine($"Group     : {user.GroupId}");
+    Console.WriteLine($"Card      : {user.CardNumber}");
+}
+
+static async Task AddOrUpdateUserAsync(ZkDeviceOptions options)
+{
+    Console.WriteLine("Add / update user");
+    Console.WriteLine("-----------------");
+    Console.WriteLine("This writes a 72-byte ZK8 user record to the device.");
+
+    Console.Write("UID (internal numeric device UID): ");
+    if (!ushort.TryParse(Console.ReadLine(), out var uid) || uid == 0)
+    {
+        Console.WriteLine("Invalid UID.");
+        return;
+    }
+
+    Console.Write("User ID: ");
+    var userId = Console.ReadLine()?.Trim() ?? string.Empty;
+    Console.Write("Name: ");
+    var name = Console.ReadLine()?.Trim() ?? string.Empty;
+    Console.Write("Privilege [0]: ");
+    var privilegeText = Console.ReadLine()?.Trim();
+    var privilege = byte.TryParse(privilegeText, out var p) ? p : (byte)0;
+    Console.Write("Password [empty]: ");
+    var password = Console.ReadLine() ?? string.Empty;
+    Console.Write("Group ID [empty]: ");
+    var group = Console.ReadLine()?.Trim() ?? string.Empty;
+    Console.Write("Card number [0]: ");
+    var cardText = Console.ReadLine()?.Trim();
+    var card = uint.TryParse(cardText, out var c) ? c : 0u;
+
+    var user = new ZkUser(uid, userId, name, privilege, password, group, card);
+
+    Console.Write($"Write UID {uid}, User ID '{userId}', Name '{name}'? [y/N]: ");
+    var confirm = Console.ReadLine()?.Trim();
+    if (!string.Equals(confirm, "y", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(confirm, "yes", StringComparison.OrdinalIgnoreCase))
+    {
+        Console.WriteLine("Cancelled.");
+        return;
+    }
+
+    await using var admin = new ZkUserManagementClient(options);
+    await admin.SetUserAsync(user);
+    Console.WriteLine("User write acknowledged by device.");
+}
+
+static async Task DeleteUserAsync(ZkDevice device, ZkDeviceOptions options)
+{
+    Console.Write("User ID to delete: ");
+    var userId = Console.ReadLine()?.Trim();
+    if (string.IsNullOrWhiteSpace(userId))
+        return;
+
+    var users = await device.GetUsersAsync();
+    var user = users.FirstOrDefault(x => string.Equals(x.UserId, userId, StringComparison.Ordinal));
+    if (user is null)
+    {
+        Console.WriteLine("User not found; nothing deleted.");
+        return;
+    }
+
+    Console.WriteLine($"Found UID={user.Uid}, Name='{user.Name}'.");
+    Console.Write("Type DELETE to confirm: ");
+    if (!string.Equals(Console.ReadLine()?.Trim(), "DELETE", StringComparison.Ordinal))
+    {
+        Console.WriteLine("Cancelled.");
+        return;
+    }
+
+    await using var admin = new ZkUserManagementClient(options);
+    await admin.DeleteUserAsync(user.Uid);
+    Console.WriteLine("Delete acknowledged by device.");
+}
+
 static async Task ShowDeviceInfoAsync(ZkDevice device)
 {
     Console.WriteLine("Reading device information...");
     var info = await device.GetDeviceInfoAsync();
-
     Console.WriteLine();
     Console.WriteLine("Device information");
     Console.WriteLine("------------------");
@@ -126,7 +204,6 @@ static async Task ShowStorageInfoAsync(ZkDevice device)
 {
     Console.WriteLine("Reading storage / capacity...");
     var storage = await device.GetStorageInfoAsync();
-
     Console.WriteLine();
     Console.WriteLine("Storage / capacity");
     Console.WriteLine("------------------");
@@ -142,7 +219,6 @@ static async Task ShowDeviceTimeAsync(ZkDevice device)
     var deviceTime = await device.GetTimeAsync();
     var localTime = DateTime.Now;
     var difference = deviceTime - localTime;
-
     Console.WriteLine("Device time");
     Console.WriteLine("-----------");
     Console.WriteLine($"Device : {deviceTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}");
@@ -163,7 +239,6 @@ static async Task ShowUsersAsync(ZkDevice device)
 {
     Console.WriteLine("Reading users...");
     var users = await device.GetUsersAsync();
-
     Console.WriteLine();
     Console.WriteLine($"Users ({users.Count})");
     Console.WriteLine(new string('-', 92));
@@ -184,7 +259,6 @@ static async Task ShowAttendanceLogsAsync(ZkDevice device)
 {
     Console.WriteLine("Reading attendance logs...");
     var logs = await device.GetAttendanceLogsAsync();
-
     Console.WriteLine();
     Console.WriteLine($"Attendance logs ({logs.Count})");
     Console.WriteLine(new string('-', 96));
@@ -200,9 +274,7 @@ static async Task ShowAttendanceLogsAsync(ZkDevice device)
     foreach (var log in logs.OrderBy(x => x.Timestamp))
     {
         var timestamp = log.Timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
-        Console.WriteLine(
-            $"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {timestamp,-20} " +
-            $"{log.Status,-8} {log.Punch,-7} {(log.WorkCode?.ToString() ?? string.Empty),-10}");
+        Console.WriteLine($"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {timestamp,-20} {log.Status,-8} {log.Punch,-7} {(log.WorkCode?.ToString() ?? string.Empty),-10}");
     }
 }
 
@@ -214,14 +286,12 @@ static async Task WatchLiveAttendanceAsync(ZkDeviceOptions options)
 
     await using var live = new ZkLiveEventClient(options);
     await live.ConnectAsync();
-
     Console.WriteLine($"Live session connected. Session ID: {live.SessionId}");
     Console.WriteLine("Touch the terminal / verify a user now.");
     Console.WriteLine("Press Enter to stop watching.");
     Console.WriteLine();
 
     using var cts = new CancellationTokenSource();
-
     var watchTask = Task.Run(async () =>
     {
         await foreach (var evt in live.WatchAttendanceAsync(cts.Token))
@@ -232,27 +302,14 @@ static async Task WatchLiveAttendanceAsync(ZkDeviceOptions options)
                 continue;
             }
 
-            var timestamp = evt.Timestamp?.ToString(
-                "yyyy-MM-dd HH:mm:ss",
-                CultureInfo.InvariantCulture) ?? "<unknown>";
-
-            Console.WriteLine(
-                $"[LIVE] User={evt.UserId ?? "<unknown>"}  Time={timestamp}  " +
-                $"Status={evt.Status?.ToString() ?? "?"}  Punch={evt.Punch?.ToString() ?? "?"}");
+            var timestamp = evt.Timestamp?.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) ?? "<unknown>";
+            Console.WriteLine($"[LIVE] User={evt.UserId ?? "<unknown>"}  Time={timestamp}  Status={evt.Status?.ToString() ?? "?"}  Punch={evt.Punch?.ToString() ?? "?"}");
         }
     });
 
     Console.ReadLine();
     cts.Cancel();
-
-    try
-    {
-        await watchTask;
-    }
-    catch (OperationCanceledException)
-    {
-    }
-
+    try { await watchTask; } catch (OperationCanceledException) { }
     Console.WriteLine("Live watcher stopped.");
 }
 
@@ -260,67 +317,39 @@ static async Task ProbePushOptionsAsync(ZkDevice device)
 {
     var optionNames = new[]
     {
-        "~DeviceName",
-        "~SerialNumber",
-        "~Platform",
-        "~ProductTime",
-        "~ZKFPVersion",
-        "~FaceFunOn",
-        "~PushVersion",
-        "PushVersion",
-        "ADMS",
-        "EnableADMS",
-        "CloudServer",
-        "CloudServerIP",
-        "CloudServerPort",
-        "ServerIP",
-        "ServerPort",
-        "WebServer",
-        "WebServerIP",
-        "WebServerPort",
-        "PushServer",
-        "PushServerIP",
-        "PushServerPort",
-        "ServerAddr",
-        "ServerAddress",
-        "ServerURL",
-        "ServerUrl",
-        "EnableProxyServer",
-        "ProxyServer",
-        "ProxyServerIP",
-        "ProxyServerPort"
+        "~DeviceName", "~SerialNumber", "~Platform", "~ProductTime", "~ZKFPVersion", "~FaceFunOn",
+        "~PushVersion", "PushVersion", "ADMS", "EnableADMS", "CloudServer", "CloudServerIP",
+        "CloudServerPort", "ServerIP", "ServerPort", "WebServer", "WebServerIP", "WebServerPort",
+        "PushServer", "PushServerIP", "PushServerPort", "ServerAddr", "ServerAddress", "ServerURL",
+        "ServerUrl", "EnableProxyServer", "ProxyServer", "ProxyServerIP", "ProxyServerPort"
     };
 
     Console.WriteLine("Probing read-only device options related to ADMS / Push...");
-    var options = await device.GetOptionsAsync(optionNames);
-
+    var foundOptions = await device.GetOptionsAsync(optionNames);
     Console.WriteLine();
     Console.WriteLine("ADMS / Push capability probe");
     Console.WriteLine("----------------------------");
 
     var found = 0;
-    foreach (var (name, value) in options)
+    foreach (var (name, value) in foundOptions)
     {
         if (value is null)
         {
             Console.WriteLine($"{name,-22} : <not available>");
             continue;
         }
-
         found++;
         Console.WriteLine($"{name,-22} : {(string.IsNullOrWhiteSpace(value) ? "<empty>" : value)}");
     }
 
     Console.WriteLine();
-    Console.WriteLine($"Readable options: {found}/{options.Count}");
+    Console.WriteLine($"Readable options: {found}/{foundOptions.Count}");
     Console.WriteLine("This probe only reads configuration; it does not change anything on the device.");
 }
 
 static void PrintUser(ZkUser user)
 {
-    Console.WriteLine(
-        $"{user.Uid,-6} {TrimForTable(user.UserId, 16),-16} {TrimForTable(user.Name, 28),-28} " +
-        $"{user.Privilege,-10} {TrimForTable(user.GroupId, 8),-8} {user.CardNumber,-12}");
+    Console.WriteLine($"{user.Uid,-6} {TrimForTable(user.UserId, 16),-16} {TrimForTable(user.Name, 28),-28} {user.Privilege,-10} {TrimForTable(user.GroupId, 8),-8} {user.CardNumber,-12}");
 }
 
 static void ShowConnectionStatus(ZkDevice device, string host)
