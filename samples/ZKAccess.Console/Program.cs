@@ -40,6 +40,9 @@ while (true)
     Console.WriteLine("4. Connection status");
     Console.WriteLine("5. Probe ADMS / Push options");
     Console.WriteLine("6. Watch live attendance events [experimental]");
+    Console.WriteLine("7. Storage / capacity");
+    Console.WriteLine("8. Device time");
+    Console.WriteLine("9. Set device time to this computer's local time");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
     Console.Write("Select: ");
@@ -75,6 +78,18 @@ while (true)
                 await WatchLiveAttendanceAsync(options);
                 break;
 
+            case "7":
+                await ShowStorageInfoAsync(device);
+                break;
+
+            case "8":
+                await ShowDeviceTimeAsync(device);
+                break;
+
+            case "9":
+                await SetDeviceTimeAsync(device);
+                break;
+
             case "0":
             case "q":
             case "quit":
@@ -83,7 +98,7 @@ while (true)
                 return;
 
             default:
-                Console.WriteLine("Unknown selection. Choose 0-6.");
+                Console.WriteLine("Unknown selection. Choose 0-9.");
                 break;
         }
     }
@@ -105,6 +120,43 @@ static async Task ShowDeviceInfoAsync(ZkDevice device)
     Console.WriteLine($"Serial   : {Display(info.SerialNumber)}");
     Console.WriteLine($"Platform : {Display(info.Platform)}");
     Console.WriteLine($"Firmware : {Display(info.FirmwareVersion)}");
+}
+
+static async Task ShowStorageInfoAsync(ZkDevice device)
+{
+    Console.WriteLine("Reading storage / capacity...");
+    var storage = await device.GetStorageInfoAsync();
+
+    Console.WriteLine();
+    Console.WriteLine("Storage / capacity");
+    Console.WriteLine("------------------");
+    Console.WriteLine($"Users                 : {storage.Users} / {storage.UserCapacity}  (available {storage.AvailableUsers})");
+    Console.WriteLine($"Attendance records    : {storage.AttendanceRecords} / {storage.AttendanceCapacity}  (available {storage.AvailableAttendanceRecords})");
+    Console.WriteLine($"Fingerprints          : {storage.Fingerprints} / {storage.FingerprintCapacity}  (available {storage.AvailableFingerprints})");
+    Console.WriteLine($"Cards                 : {storage.Cards}");
+    Console.WriteLine($"Faces                 : {storage.Faces} / {storage.FaceCapacity}");
+}
+
+static async Task ShowDeviceTimeAsync(ZkDevice device)
+{
+    var deviceTime = await device.GetTimeAsync();
+    var localTime = DateTime.Now;
+    var difference = deviceTime - localTime;
+
+    Console.WriteLine("Device time");
+    Console.WriteLine("-----------");
+    Console.WriteLine($"Device : {deviceTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}");
+    Console.WriteLine($"Local  : {localTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}");
+    Console.WriteLine($"Delta  : {difference.TotalSeconds:+0;-0;0} seconds");
+}
+
+static async Task SetDeviceTimeAsync(ZkDevice device)
+{
+    var timestamp = DateTime.Now;
+    Console.WriteLine($"Setting device time to {timestamp.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}...");
+    await device.SetTimeAsync(timestamp);
+    var actual = await device.GetTimeAsync();
+    Console.WriteLine($"Device now reports    {actual.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)}");
 }
 
 static async Task ShowUsersAsync(ZkDevice device)
@@ -199,7 +251,6 @@ static async Task WatchLiveAttendanceAsync(ZkDeviceOptions options)
     }
     catch (OperationCanceledException)
     {
-        // Normal end of the live watcher.
     }
 
     Console.WriteLine("Live watcher stopped.");
