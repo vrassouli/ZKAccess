@@ -1,4 +1,5 @@
 using ZKAccess;
+using ZKAccess.Models;
 
 var host = args.Length > 0 ? args[0] : "192.168.1.254";
 var commKey = args.Length > 1 && int.TryParse(args[1], out var parsedKey) ? parsedKey : 1;
@@ -31,8 +32,8 @@ while (true)
     Console.WriteLine("Menu");
     Console.WriteLine("----");
     Console.WriteLine("1. Device information");
-    Console.WriteLine("2. User list            [bulk transfer - coming next]");
-    Console.WriteLine("3. Attendance logs      [bulk transfer - coming next]");
+    Console.WriteLine("2. User list");
+    Console.WriteLine("3. Attendance logs      [coming next]");
     Console.WriteLine("4. Connection status");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
@@ -50,7 +51,7 @@ while (true)
                 break;
 
             case "2":
-                ShowPendingFeature("User list", "GetUsersAsync()");
+                await ShowUsersAsync(device);
                 break;
 
             case "3":
@@ -93,6 +94,34 @@ static async Task ShowDeviceInfoAsync(ZkDevice device)
     Console.WriteLine($"Firmware : {Display(info.FirmwareVersion)}");
 }
 
+static async Task ShowUsersAsync(ZkDevice device)
+{
+    Console.WriteLine("Reading users...");
+    var users = await device.GetUsersAsync();
+
+    Console.WriteLine();
+    Console.WriteLine($"Users ({users.Count})");
+    Console.WriteLine(new string('-', 92));
+    Console.WriteLine($"{"UID",-6} {"User ID",-16} {"Name",-28} {"Privilege",-10} {"Group",-8} {"Card",-12}");
+    Console.WriteLine(new string('-', 92));
+
+    if (users.Count == 0)
+    {
+        Console.WriteLine("No users found.");
+        return;
+    }
+
+    foreach (var user in users)
+        PrintUser(user);
+}
+
+static void PrintUser(ZkUser user)
+{
+    Console.WriteLine(
+        $"{user.Uid,-6} {TrimForTable(user.UserId, 16),-16} {TrimForTable(user.Name, 28),-28} " +
+        $"{user.Privilege,-10} {TrimForTable(user.GroupId, 8),-8} {user.CardNumber,-12}");
+}
+
 static void ShowConnectionStatus(ZkDevice device, string host)
 {
     Console.WriteLine("Connection status");
@@ -107,7 +136,12 @@ static void ShowPendingFeature(string title, string api)
     Console.WriteLine(title);
     Console.WriteLine(new string('-', title.Length));
     Console.WriteLine($"{api} is the next protocol feature to implement.");
-    Console.WriteLine("It requires ZKTeco bulk/multi-packet transfer support, which is intentionally not stubbed with fake data.");
+}
+
+static string TrimForTable(string? value, int width)
+{
+    value ??= string.Empty;
+    return value.Length <= width ? value : value[..Math.Max(0, width - 1)] + "…";
 }
 
 static string Display(string? value) => string.IsNullOrWhiteSpace(value) ? "<unknown>" : value;
