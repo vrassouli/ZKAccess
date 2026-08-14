@@ -3,9 +3,11 @@ namespace ZKAccess.Protocol;
 internal static class ZkCommands
 {
     public const ushort DbRead = 7;
+    public const ushort UserWrite = 8;
     public const ushort UserTemplateRead = 9;
     public const ushort OptionsRead = 11;
     public const ushort AttendanceRead = 13;
+    public const ushort DeleteUser = 18;
     public const ushort GetFreeSizes = 50;
 
     public const ushort GetTime = 201;
@@ -13,6 +15,7 @@ internal static class ZkCommands
 
     public const ushort Connect = 1000;
     public const ushort Exit = 1001;
+    public const ushort RefreshData = 1013;
     public const ushort GetVersion = 1100;
     public const ushort Auth = 1102;
 
