@@ -36,6 +36,7 @@ while (true)
     Console.WriteLine("2. User list");
     Console.WriteLine("3. Attendance logs");
     Console.WriteLine("4. Connection status");
+    Console.WriteLine("5. Probe ADMS / Push options");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
     Console.Write("Select: ");
@@ -63,6 +64,10 @@ while (true)
                 ShowConnectionStatus(device, host);
                 break;
 
+            case "5":
+                await ProbePushOptionsAsync(device);
+                break;
+
             case "0":
             case "q":
             case "quit":
@@ -71,7 +76,7 @@ while (true)
                 return;
 
             default:
-                Console.WriteLine("Unknown selection. Choose 0-4.");
+                Console.WriteLine("Unknown selection. Choose 0-5.");
                 break;
         }
     }
@@ -140,6 +145,66 @@ static async Task ShowAttendanceLogsAsync(ZkDevice device)
             $"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {timestamp,-20} " +
             $"{log.Status,-8} {log.Punch,-7} {(log.WorkCode?.ToString() ?? string.Empty),-10}");
     }
+}
+
+static async Task ProbePushOptionsAsync(ZkDevice device)
+{
+    var optionNames = new[]
+    {
+        "~DeviceName",
+        "~SerialNumber",
+        "~Platform",
+        "~ProductTime",
+        "~ZKFPVersion",
+        "~FaceFunOn",
+        "~PushVersion",
+        "PushVersion",
+        "ADMS",
+        "EnableADMS",
+        "CloudServer",
+        "CloudServerIP",
+        "CloudServerPort",
+        "ServerIP",
+        "ServerPort",
+        "WebServer",
+        "WebServerIP",
+        "WebServerPort",
+        "PushServer",
+        "PushServerIP",
+        "PushServerPort",
+        "ServerAddr",
+        "ServerAddress",
+        "ServerURL",
+        "ServerUrl",
+        "EnableProxyServer",
+        "ProxyServer",
+        "ProxyServerIP",
+        "ProxyServerPort"
+    };
+
+    Console.WriteLine("Probing read-only device options related to ADMS / Push...");
+    var options = await device.GetOptionsAsync(optionNames);
+
+    Console.WriteLine();
+    Console.WriteLine("ADMS / Push capability probe");
+    Console.WriteLine("----------------------------");
+
+    var found = 0;
+    foreach (var (name, value) in options)
+    {
+        if (value is null)
+        {
+            Console.WriteLine($"{name,-22} : <not available>");
+            continue;
+        }
+
+        found++;
+        Console.WriteLine($"{name,-22} : {(string.IsNullOrWhiteSpace(value) ? "<empty>" : value)}");
+    }
+
+    Console.WriteLine();
+    Console.WriteLine($"Readable options: {found}/{options.Count}");
+    Console.WriteLine("This probe only reads configuration; it does not change anything on the device.");
 }
 
 static void PrintUser(ZkUser user)
