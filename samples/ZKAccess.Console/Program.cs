@@ -5,12 +5,14 @@ using ZKAccess.Models;
 var host = args.Length > 0 ? args[0] : "192.168.1.254";
 var commKey = args.Length > 1 && int.TryParse(args[1], out var parsedKey) ? parsedKey : 1;
 
-await using var device = new ZkDevice(new ZkDeviceOptions
+var options = new ZkDeviceOptions
 {
     Host = host,
     Port = 4370,
     CommKey = commKey
-});
+};
+
+await using var device = new ZkDevice(options);
 
 Console.WriteLine("ZKAccess Sample Console");
 Console.WriteLine("=======================");
@@ -37,6 +39,7 @@ while (true)
     Console.WriteLine("3. Attendance logs");
     Console.WriteLine("4. Connection status");
     Console.WriteLine("5. Probe ADMS / Push options");
+    Console.WriteLine("6. Watch live attendance events [experimental]");
     Console.WriteLine("0. Exit");
     Console.WriteLine();
     Console.Write("Select: ");
@@ -68,6 +71,10 @@ while (true)
                 await ProbePushOptionsAsync(device);
                 break;
 
+            case "6":
+                await WatchLiveAttendanceAsync(options);
+                break;
+
             case "0":
             case "q":
             case "quit":
@@ -76,7 +83,7 @@ while (true)
                 return;
 
             default:
-                Console.WriteLine("Unknown selection. Choose 0-5.");
+                Console.WriteLine("Unknown selection. Choose 0-6.");
                 break;
         }
     }
@@ -145,6 +152,57 @@ static async Task ShowAttendanceLogsAsync(ZkDevice device)
             $"{log.Uid,-6} {TrimForTable(log.UserId, 16),-16} {timestamp,-20} " +
             $"{log.Status,-8} {log.Punch,-7} {(log.WorkCode?.ToString() ?? string.Empty),-10}");
     }
+}
+
+static async Task WatchLiveAttendanceAsync(ZkDeviceOptions options)
+{
+    Console.WriteLine("Live attendance events (experimental)");
+    Console.WriteLine("-------------------------------------");
+    Console.WriteLine("Opening a dedicated live-event session...");
+
+    await using var live = new ZkLiveEventClient(options);
+    await live.ConnectAsync();
+
+    Console.WriteLine($"Live session connected. Session ID: {live.SessionId}");
+    Console.WriteLine("Touch the terminal / verify a user now.");
+    Console.WriteLine("Press Enter to stop watching.");
+    Console.WriteLine();
+
+    using var cts = new CancellationTokenSource();
+
+    var watchTask = Task.Run(async () =>
+    {
+        await foreach (var evt in live.WatchAttendanceAsync(cts.Token))
+        {
+            if (!evt.Parsed)
+            {
+                Console.WriteLine($"[RAW LIVE EVENT] {Convert.ToHexString(evt.RawData)}");
+                continue;
+            }
+
+            var timestamp = evt.Timestamp?.ToString(
+                "yyyy-MM-dd HH:mm:ss",
+                CultureInfo.InvariantCulture) ?? "<unknown>";
+
+            Console.WriteLine(
+                $"[LIVE] User={evt.UserId ?? "<unknown>"}  Time={timestamp}  " +
+                $"Status={evt.Status?.ToString() ?? "?"}  Punch={evt.Punch?.ToString() ?? "?"}");
+        }
+    });
+
+    Console.ReadLine();
+    cts.Cancel();
+
+    try
+    {
+        await watchTask;
+    }
+    catch (OperationCanceledException)
+    {
+        // Normal end of the live watcher.
+    }
+
+    Console.WriteLine("Live watcher stopped.");
 }
 
 static async Task ProbePushOptionsAsync(ZkDevice device)
